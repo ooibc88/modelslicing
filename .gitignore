@@ -1,0 +1,17 @@
+# checkpoint
+/checkpoint
+
+# dataset
+/data
+
+# pycharm IDE
+.idea/
+
+# test file
+test.py
+
+# python cache
+__pycache__/
+
+# info
+info
