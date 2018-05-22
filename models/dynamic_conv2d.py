@@ -37,32 +37,29 @@ class DynamicConv2d(Conv2d):
     """
 
     def __init__(self, in_channels, out_channels, kernel_size, stride=1,
-                 padding=0, dilation=1, groups=1, bias=True):
+                 padding=0, dilation=1, groups=1, bias=False):
         self.in_channels, self.out_channels = in_channels, out_channels
         super(DynamicConv2d, self).__init__(in_channels, out_channels, kernel_size, stride,
                  padding, dilation, groups, bias=bias)
+        # self.register_buffer('input_mask', torch.zeros((1, in_channels, 1, 1)))
 
-    def forward(self, input, keep_rate=1., restore_out=True):
+    def forward(self, input, keep_rate=1.):
         assert 0.<keep_rate<=1.
-        self.keep_rate = keep_rate
-        in_channels, out_channels = round(keep_rate*self.in_channels), round(keep_rate*self.out_channels)
-        if out_channels < self.out_channels:
-            if in_channels < input.size()[1]:
-                input = input[:, :in_channels]
+        # in_channels = round(keep_rate*self.in_channels)
+        out_channels = round(keep_rate*self.out_channels)
 
-            current_weight = self.weight[:out_channels, :in_channels]
-            current_bias = self.bias[:out_channels]
+        # if in_channels < self.in_channels:
+            # self.input_mask.fill_(0.)[:, :in_channels] = float(self.in_channels)/float(in_channels)
+            # input_mask = torch.zeros((1, self.in_channels, 1, 1), device=input.device)
+            # input_mask[:, :in_channels] = float(self.in_channels)/float(in_channels)
+            # input = input * input_mask.expand_as(input)
 
-            output = F.conv2d(input, current_weight, current_bias, self.stride,
-                            self.padding, self.dilation, self.groups)
-
-            if restore_out:
-                zero_padding = torch.zeros((output.size()[0], self.out_channels-out_channels, output.size()[2], output.size()[3]), device=output.device)
-                return torch.cat((output, zero_padding), dim=1)
-            else: return output
-        else:
-            return F.conv2d(input, self.weight, self.bias, self.stride,
+        out = F.conv2d(input, self.weight, self.bias, self.stride,
                         self.padding, self.dilation, self.groups)
+        if out_channels < self.out_channels:
+            out[:, out_channels:] = 0.
+            out *= float(self.out_channels)/out_channels
+        return out
 
 def test():
     import torch

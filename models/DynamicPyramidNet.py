@@ -7,7 +7,7 @@ import math
 def dynamic_conv3x3(in_planes, out_planes, stride=1):
     "3x3 convolution with padding"
     return DynamicConv2d(in_planes, out_planes, kernel_size=3, stride=stride,
-                     padding=1, bias=True)
+                     padding=1, bias=False)
 
 class BasicBlock(nn.Module):
     outchannel_ratio = 1
@@ -24,6 +24,7 @@ class BasicBlock(nn.Module):
         self.stride = stride
 
     def forward(self, input):
+        # wrap input/output due to nn.Sequential
         x, keep_rate = input
 
         out = self.bn1(x)
@@ -59,18 +60,19 @@ class Bottleneck(nn.Module):
     def __init__(self, inplanes, planes, stride=1, downsample=None):
         super(Bottleneck, self).__init__()
         self.bn1 = nn.BatchNorm2d(inplanes)
-        self.conv1 = DynamicConv2d(inplanes, planes, kernel_size=1, bias=True)
+        self.conv1 = DynamicConv2d(inplanes, planes, kernel_size=1, bias=False)
         self.bn2 = nn.BatchNorm2d(planes)
         self.conv2 = DynamicConv2d(planes, (planes * 1), kernel_size=3, stride=stride,
-                               padding=1, bias=True)
+                               padding=1, bias=False)
         self.bn3 = nn.BatchNorm2d((planes * 1))
-        self.conv3 = DynamicConv2d((planes * 1), planes * Bottleneck.outchannel_ratio, kernel_size=1, bias=True)
+        self.conv3 = DynamicConv2d((planes * 1), planes * Bottleneck.outchannel_ratio, kernel_size=1, bias=False)
         self.bn4 = nn.BatchNorm2d(planes * Bottleneck.outchannel_ratio)
         self.relu = nn.ReLU(inplace=True)
         self.downsample = downsample
         self.stride = stride
 
     def forward(self, input):
+        # wrap input/output due to nn.Sequential
         x, keep_rate = input
 
         out = self.bn1(x)
@@ -125,7 +127,7 @@ class DynamicPyramidNet(nn.Module):
             self.addrate = alpha / (3 * n * 1.0)
 
             self.input_featuremap_dim = self.inplanes
-            self.conv1 = nn.Conv2d(3, self.input_featuremap_dim, kernel_size=3, stride=1, padding=1, bias=True)
+            self.conv1 = nn.Conv2d(3, self.input_featuremap_dim, kernel_size=3, stride=1, padding=1, bias=False)
             self.bn1 = nn.BatchNorm2d(self.input_featuremap_dim)
 
             self.featuremap_dim = self.input_featuremap_dim
@@ -159,7 +161,7 @@ class DynamicPyramidNet(nn.Module):
             self.addrate = alpha / (sum(layers[depth]) * 1.0)
 
             self.input_featuremap_dim = self.inplanes
-            self.conv1 = nn.Conv2d(3, self.input_featuremap_dim, kernel_size=7, stride=2, padding=3, bias=True)
+            self.conv1 = nn.Conv2d(3, self.input_featuremap_dim, kernel_size=7, stride=2, padding=3, bias=False)
             self.bn1 = nn.BatchNorm2d(self.input_featuremap_dim)
             self.relu = nn.ReLU(inplace=True)
             self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
@@ -217,9 +219,11 @@ class DynamicPyramidNet(nn.Module):
             x = self.avgpool(x)
             x = x.view(x.size(0), -1)
             # 2nd place, scale by 1./keep_rate
-            # if keep_rate < 1.:   x *= 1./keep_rate
+            # channel_num = round(x.size(1)*keep_rate)
+            # if channel_num < x.size(1):   x *= float(x.size(1))/channel_num
             x = self.fc(x)
 
+        # need revision here
         elif self.dataset == 'imagenet':
             x = self.conv1(x)
             x = self.bn1(x)

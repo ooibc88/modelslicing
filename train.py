@@ -17,6 +17,7 @@ from torch.distributions import normal
 
 from models.resnet import ResNet
 from models.preresnet import PreResNet
+from models.DynamicPreResnet import DynamicPreResNet
 from models.PyramidNet import PyramidNet
 from models.DynamicPyramidNet import DynamicPyramidNet
 from data_loader import data_loader
@@ -95,12 +96,11 @@ def main():
         if args.net_type == 'resnet':
             model = ResNet(args.dataset, args.depth, class_num, args.bottleneck) # for ResNet
         elif args.net_type == 'preresnet':
-            model = PreResNet(args.dataset, args.depth, class_num, args.bottleneck) # for Pre-activation ResNet
+            if args.dynamic: model = DynamicPreResNet(args.dataset, args.depth, class_num, args.bottleneck) # for Dynamic Pre-activation ResNet
+            else: model = PreResNet(args.dataset, args.depth, class_num, args.bottleneck) # for Pre-activation ResNet
         elif args.net_type == 'pyramidnet':
-            if args.dynamic:
-                model = DynamicPyramidNet(args.dataset, args.depth, args.alpha, class_num, args.bottleneck) # for DynamicPyramidNet
-            else:
-                model = PyramidNet(args.dataset, args.depth, args.alpha, class_num, args.bottleneck) # for PyramidNet
+            if args.dynamic: model = DynamicPyramidNet(args.dataset, args.depth, args.alpha, class_num, args.bottleneck) # for Dynamic PyramidNet
+            else: model = PyramidNet(args.dataset, args.depth, args.alpha, class_num, args.bottleneck) # for PyramidNet
         else:
             raise Exception ('unknown network architecture: {}'.format(args.net_type))
 
@@ -168,7 +168,7 @@ def main():
     print_logger.info('Best accuracy:\ttop1 = {top1:.4f} | top5 = {top5:.4f}'.format(top1=best_err1, top5=best_err5))
 
 def save_checkpoint(checkpoint, is_best, filename='checkpoint.ckpt'):
-    directory = "checkpoint/{0}/".format(args.exp_name)
+    directory = "/home/shaofeng/ncrs-hdd1/checkpoint/{0}/".format(args.exp_name)
     if not os.path.exists(directory):
         os.makedirs(directory)
     filename = directory + filename
@@ -193,7 +193,7 @@ def accuracy(output, target, topk=(1,)):
 
     return res
 
-def draw_keep_rate(dist, progress=1., lower_bound=0.1):
+def draw_keep_rate(dist, progress=1., lower_bound=0.4):
     keep_rate = dist.sample().item()
     return max(lower_bound, min(1., keep_rate))
 
@@ -237,14 +237,14 @@ def run(epoch, model, data_loader, criterion, optimizer=None, keep_rate=1., dist
         if args.verbose == True:
             print_logger.info('Epoch: [{0}/{1}][{2}/{3}]\t'
                   'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+                  '{4}Loss {loss.val:.4f} ({loss.avg:.4f})\t'
                   'Top 1-err {top1.val:.4f} ({top1.avg:.4f})\t'
                   'Top 5-err {top5.val:.4f} ({top5.avg:.4f})'.format(
-                   epoch, args.epoch, idx, len(data_loader), batch_time=batch_time_avg,
-                    loss=loss_avg, top1=top1_avg, top5=top5_avg))
+                epoch, args.epoch, idx, len(data_loader), ('keep_rate {0:.4f}\t'.format(keep_rate) if args.dynamic else ''),
+                batch_time=batch_time_avg, loss=loss_avg, top1=top1_avg, top5=top5_avg))
 
-    print_logger.info('* Epoch: [{0}/{1}]\tTotal Time: {2}\tTop 1-err {top1.avg:.3f}  Top 5-err {top5.avg:.3f}\tTest Loss {loss.avg:.3f}'.format(
-        epoch, args.epoch, timeSince(s=batch_time_avg.sum),top1=top1_avg, top5=top5_avg, loss=loss_avg))
+    print_logger.info('* Epoch: [{0}/{1}]{2:>6s}  Total Time: {3}\tTop 1-err {top1.avg:.3f}  Top 5-err {top5.avg:.3f}\tTest Loss {loss.avg:.3f}'.format(
+        epoch, args.epoch, ('train' if optimizer is not None else 'val'), timeSince(s=batch_time_avg.sum), top1=top1_avg, top5=top5_avg, loss=loss_avg))
     if args.tensorboard:
         log_value('train_loss', loss_avg.avg, epoch)
         log_value('train_error', top1_avg.avg, epoch)
