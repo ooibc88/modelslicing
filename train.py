@@ -34,6 +34,7 @@ parser.add_argument('--dynamic', dest='dynamic', action='store_true', help='whet
 parser.add_argument('--no-bottleneck', dest='bottleneck', action='store_false', help='to use basicblock for CIFAR datasets (default: bottleneck)')
 parser.add_argument('--alpha', default=300, type=int, help='number of new channel increases per depth (default: 300)')
 parser.add_argument('--depth', default=32, type=int, help='depth of the network (default: 32)')
+parser.add_argument('--lower_bound', default=0.4, type=float, help='lower bound keep rate drawn from distribution')
 
 parser.add_argument('--epoch', default=300, type=int, metavar='N', help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N', help='manual epoch number (useful on restarts)')
@@ -44,7 +45,7 @@ parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float, metavar=
 
 parser.add_argument('--pretrained', dest='pretrained', action='store_true', help='use pre-trained model on ImageNet-1k dataset')
 parser.add_argument('--resume', default='', type=str, metavar='PATH', help='path to latest checkpoint (default: none)')
-parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true', help='evaluate model on validation set')
+parser.add_argument('--resume_best', dest='resume_best', action='store_true', help='whether to resume best_checkpoint (default: False)')
 parser.add_argument('--checkpoint-dir', default='/home/shaofeng/ncrs-hdd1/checkpoint/', type=str, metavar='PATH', help='path to checkpoint')
 
 parser.add_argument('--world-size', default=1, type=int, help='number of distributed processes')
@@ -60,6 +61,7 @@ parser.add_argument('--no-verbose', dest='verbose', action='store_false', help='
 parser.add_argument('--tensorboard', help='Log progress to TensorBoard', action='store_true')
 
 parser.set_defaults(dynamic=False)
+parser.set_defaults(resume_best=False)
 parser.set_defaults(bottleneck=True)
 parser.set_defaults(augment=True)
 parser.set_defaults(verbose=True)
@@ -137,10 +139,6 @@ def main():
         print_logger.info("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
 
     cudnn.benchmark = True
-    
-    if args.evaluate:
-        run(0, model, val_loader, criterion, print_logger)
-        return
 
     # used if args.dynamic:
     distributions = normal.Normal(1., 1. / 3.)
@@ -194,7 +192,7 @@ def accuracy(output, target, topk=(1,)):
 
     return res
 
-def draw_keep_rate(dist, progress=1., lower_bound=0.4):
+def draw_keep_rate(dist, progress=1., lower_bound=args.lower_bound):
     keep_rate = dist.sample().item()
     return max(lower_bound, min(1., keep_rate))
 
@@ -223,7 +221,7 @@ def run(epoch, model, data_loader, criterion, print_logger, optimizer=None, keep
             optimizer.step()
         else:
             with torch.no_grad():
-                if args.dynamic: output = model(input, keep_rate=keep_rate)
+                if args.dynamic: output = model(input, keep_rate)
                 else: output = model(input)
                 loss = criterion(output, target)
 

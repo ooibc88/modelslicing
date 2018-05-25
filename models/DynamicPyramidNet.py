@@ -203,7 +203,7 @@ class DynamicPyramidNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def forward(self, x, keep_rate, progress=1.):
+    def forward(self, x, keep_rate):
 
         if self.dataset == 'cifar10' or self.dataset == 'cifar100':
             x = self.conv1(x)

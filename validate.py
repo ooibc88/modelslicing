@@ -36,7 +36,9 @@ def main():
     # loading model from checkpoint
     print_logger.info("=> loading checkpoint '{}'".format(args.resume))
     if os.path.isfile(args.resume): checkpoint = torch.load(args.resume)
-    elif args.resume == 'checkpoint': checkpoint = torch.load('{0}{1}'.format(args.checkpoint_dir, 'checkpoint.ckpt'))
+    elif args.resume == 'checkpoint':
+        if args.resume_best: checkpoint = torch.load('{0}{1}'.format(args.checkpoint_dir, 'best_checkpoint.ckpt'))
+        else: checkpoint = torch.load('{0}{1}'.format(args.checkpoint_dir, 'checkpoint.ckpt'))
     else: print_logger.info("=> no checkpoint found at '{}'".format(args.resume)); return
 
     model.load_state_dict(checkpoint['state_dict'])
@@ -46,12 +48,11 @@ def main():
 
     cudnn.benchmark = True
 
-    args.dynamic = False
-    for keep_rate in torch.range(1., 0.1, -0.05):
-        err1_train, err5_train = run(checkpoint['epoch'], model, train_loader, criterion, print_logger, keep_rate=keep_rate)
-        err1_val, err5_val = run(checkpoint['epoch'], model, val_loader, criterion, print_logger, keep_rate=keep_rate)
-        print_logger.info('> Train Set Top 1-err {top1_train.avg:.3f}  Top 5-err {top5_train.avg:.3f}\n'
-                          'Validation Set Top 1-err {top1_val.avg:.3f}  Top 5-err {top5_val.avg:.3f}'.format(
+    for keep_rate in torch.range(1., 0.75, -0.02):
+        err1_train, err5_train = run(checkpoint['epoch'], model, train_loader, criterion, print_logger, keep_rate=keep_rate.item())
+        err1_val, err5_val = run(checkpoint['epoch'], model, val_loader, criterion, print_logger, keep_rate=keep_rate.item())
+        print_logger.info('> Train Set Top 1-err {top1_train:.3f}  Top 5-err {top5_train:.3f}\n'
+                          '> Validation Set Top 1-err {top1_val:.3f}  Top 5-err {top5_val:.3f}'.format(
             top1_train=err1_train, top5_train=err5_train, top1_val=err1_val, top5_val=err5_val))
 
 
