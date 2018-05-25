@@ -45,6 +45,7 @@ parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float, metavar=
 parser.add_argument('--pretrained', dest='pretrained', action='store_true', help='use pre-trained model on ImageNet-1k dataset')
 parser.add_argument('--resume', default='', type=str, metavar='PATH', help='path to latest checkpoint (default: none)')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true', help='evaluate model on validation set')
+parser.add_argument('--checkpoint-dir', default='/home/shaofeng/ncrs-hdd1/checkpoint/', type=str, metavar='PATH', help='path to checkpoint')
 
 parser.add_argument('--world-size', default=1, type=int, help='number of distributed processes')
 parser.add_argument('--dist-url', default='file:///home/shaofeng/share_test', type=str, help='url used to set up distributed training')
@@ -62,20 +63,25 @@ parser.set_defaults(dynamic=False)
 parser.set_defaults(bottleneck=True)
 parser.set_defaults(augment=True)
 parser.set_defaults(verbose=True)
-
+# initialize all global variables
 args = parser.parse_args()
 args.data_dir += args.dataset
-args.exp_name = '{0}_{1}_{2}_{3}'.format(args.net_type, args.depth, args.alpha, args.dataset)
+
+args.exp_name = '{0}_{1}_{2}'.format(args.net_type, args.depth, args.dataset)
 if args.dynamic: args.exp_name = 'dynamic_{0}'.format(args.exp_name)
+if args.net_type=='pyramidnet': args.exp_name+='_alpha_{0}'.format(args.alpha)
+args.checkpoint_dir = '{0}{1}/'.format(args.checkpoint_dir, args.exp_name)
+
 args.distributed = (args.world_size > 1)
 best_err1, best_err5 = 100., 100.
 if not os.path.isdir('log/{}'.format(args.exp_name)):
     os.mkdir('log/{}'.format(args.exp_name))
-print_logger = logger('log/{}/stdout.log'.format(args.exp_name), False, False)
-print_logger.info(vars(args))
 
 def main():
     global args, best_err1, best_err5
+    print_logger = logger('log/{}/stdout.log'.format(args.exp_name), False, False)
+    print_logger.info(vars(args))
+
     if args.tensorboard: configure("runs/%s" % (args.exp_name))
     if args.distributed:
         dist.init_process_group(backend=args.dist_backend, world_size=args.world_size,
@@ -106,10 +112,8 @@ def main():
 
     print_logger.info('the number of model parameters: {}'.format(sum([p.data.nelement() for p in model.parameters()])))
 
-    if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model).cuda()
-    else:
-        model = torch.nn.DataParallel(model).cuda()
+    if args.distributed: model = torch.nn.parallel.DistributedDataParallel(model).cuda()
+    else: model = torch.nn.DataParallel(model).cuda()
 
     criterion = nn.CrossEntropyLoss().cuda()
     optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum,
@@ -118,38 +122,38 @@ def main():
 
     # optionally resume from a checkpoint
     if args.resume:
-        if os.path.isfile(args.resume):
-            print_logger.info("=> loading checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume)
-            args.start_epoch = checkpoint['epoch']+1    # start epoch += 1
-            model.load_state_dict(checkpoint['state_dict'])
-            best_err1 = checkpoint['best_err1']
-            best_err5 = checkpoint['best_err5']
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            scheduler.load_state_dict(checkpoint['scheduler'])
-            print_logger.info("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
-        else:
-            print_logger.info("=> no checkpoint found at '{}'".format(args.resume))
+        print_logger.info("=> loading checkpoint '{}'".format(args.resume))
+
+        if os.path.isfile(args.resume): checkpoint = torch.load(args.resume)
+        elif args.resume == 'checkpoint': checkpoint = torch.load('{0}{1}'.format(args.checkpoint_dir, 'checkpoint.ckpt'))
+        else: print_logger.info("=> no checkpoint found at '{}'".format(args.resume)); return
+
+        args.start_epoch = checkpoint['epoch'] + 1  # start epoch += 1
+        model.load_state_dict(checkpoint['state_dict'])
+        best_err1 = checkpoint['best_err1']
+        best_err5 = checkpoint['best_err5']
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        scheduler.load_state_dict(checkpoint['scheduler'])
+        print_logger.info("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
 
     cudnn.benchmark = True
     
     if args.evaluate:
-        run(0, model, val_loader, criterion)
+        run(0, model, val_loader, criterion, print_logger)
         return
 
     # used if args.dynamic:
     distributions = normal.Normal(1., 1. / 3.)
     for epoch in range(args.start_epoch, args.epoch):
-        if args.distributed:
-            train_sampler.set_epoch(epoch)
+        if args.distributed: train_sampler.set_epoch(epoch)
         scheduler.step(epoch)
         print_logger.info('Epoch: [{0}/{1}]\tLR: {LR:.6f}'.format(epoch, args.epoch, LR=scheduler.get_lr()[0]))
             
         # train for one epoch
-        run(epoch, model, train_loader, criterion, optimizer, dist=distributions)
+        run(epoch, model, train_loader, criterion, print_logger, optimizer=optimizer, dist=distributions)
         
         # evaluate on validation set
-        err1, err5 = run(epoch, model, val_loader, criterion)
+        err1, err5 = run(epoch, model, val_loader, criterion, print_logger)
         
         # record best prec@1 and save checkpoint
         is_best = err1 <= best_err1
@@ -164,17 +168,14 @@ def main():
             'best_err5': best_err5,
             'optimizer': optimizer.state_dict(),
             'scheduler': scheduler.state_dict(),
-        }, is_best)
+        }, is_best, file_dir=args.checkpoint_dir)
     print_logger.info('Best accuracy:\ttop1 = {top1:.4f} | top5 = {top5:.4f}'.format(top1=best_err1, top5=best_err5))
 
-def save_checkpoint(checkpoint, is_best, filename='checkpoint.ckpt'):
-    directory = "/home/shaofeng/ncrs-hdd1/checkpoint/{0}/".format(args.exp_name)
-    if not os.path.exists(directory):
-        os.makedirs(directory)
-    filename = directory + filename
-    torch.save(checkpoint, filename)
-    if is_best:
-        shutil.copyfile(filename, directory+'best_checkpoint.ckpt')
+def save_checkpoint(checkpoint, is_best, file_dir, file_name='checkpoint.ckpt'):
+    if not os.path.exists(file_dir): os.makedirs(file_dir)
+    ckpt_name = "{0}{1}".format(file_dir, file_name)
+    torch.save(checkpoint, ckpt_name)
+    if is_best: shutil.copyfile(ckpt_name, "{0}{1}".format(file_dir, 'best_'+file_name))
 
 def accuracy(output, target, topk=(1,)):
     """Computes the precision@k for the specified values of k"""
@@ -197,7 +198,7 @@ def draw_keep_rate(dist, progress=1., lower_bound=0.4):
     keep_rate = dist.sample().item()
     return max(lower_bound, min(1., keep_rate))
 
-def run(epoch, model, data_loader, criterion, optimizer=None, keep_rate=1., dist=None):
+def run(epoch, model, data_loader, criterion, print_logger, optimizer=None, keep_rate=1., dist=None):
     is_train = True if optimizer!=None else False
     if is_train: model.train()
     else: model.eval()

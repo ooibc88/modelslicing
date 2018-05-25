@@ -40,11 +40,11 @@ class BasicBlock(nn.Module):
             else:
                 residual = self.downsample(x)
 
-        out = self.conv1(out)
+        out = self.conv1(out, keep_rate)
 
         out = self.bn2(out)
         out = self.relu(out)
-        out = self.conv2(out)
+        out = self.conv2(out, keep_rate)
 
         out += residual
 
@@ -83,15 +83,15 @@ class Bottleneck(nn.Module):
             else:
                 residual = self.downsample(x)
 
-        out = self.conv1(out)
+        out = self.conv1(out, keep_rate)
 
         out = self.bn2(out)
         out = self.relu(out)
-        out = self.conv2(out)
+        out = self.conv2(out, keep_rate)
 
         out = self.bn3(out)
         out = self.relu(out)
-        out = self.conv3(out)
+        out = self.conv3(out, keep_rate)
 
         out += residual
 
