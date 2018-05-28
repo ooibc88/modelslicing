@@ -48,7 +48,7 @@ def main():
 
     cudnn.benchmark = True
 
-    for keep_rate in torch.range(1., 0.75, -0.02):
+    for keep_rate in torch.range(1., 0.66, -0.02):
         err1_train, err5_train = run(checkpoint['epoch'], model, train_loader, criterion, print_logger, keep_rate=keep_rate.item())
         err1_val, err5_val = run(checkpoint['epoch'], model, val_loader, criterion, print_logger, keep_rate=keep_rate.item())
         print_logger.info('> Train Set Top 1-err {top1_train:.3f}  Top 5-err {top5_train:.3f}\n'

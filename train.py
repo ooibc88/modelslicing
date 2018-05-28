@@ -70,7 +70,7 @@ args = parser.parse_args()
 args.data_dir += args.dataset
 
 args.exp_name = '{0}_{1}_{2}'.format(args.net_type, args.depth, args.dataset)
-if args.dynamic: args.exp_name = 'dynamic_{0}'.format(args.exp_name)
+if args.dynamic: args.exp_name = 'dynamic_{0}_lb_{1}'.format(args.exp_name, args.lower_bound)
 if args.net_type=='pyramidnet': args.exp_name+='_alpha_{0}'.format(args.alpha)
 args.checkpoint_dir = '{0}{1}/'.format(args.checkpoint_dir, args.exp_name)
 
