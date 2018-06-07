@@ -1,13 +1,13 @@
 import torch
 import torch.nn as nn
-from .dynamic_conv2d import DynamicConvBN2d
+from .dynamic_conv2d import DynamicConv2d, DynamicBatchNorm2d, DynamicConvBN2d
 from torch.distributions import normal
 import math
 
 
 def dynamic_conv3x3(in_planes, out_planes, stride=1):
     "3x3 convolution with padding"
-    return DynamicConvBN2d(in_planes, out_planes, kernel_size=3, stride=stride,
+    return DynamicConv2d(in_planes, out_planes, kernel_size=3, stride=stride,
                      padding=1, bias=False)
 
 class BasicBlock(nn.Module):
@@ -18,9 +18,9 @@ class BasicBlock(nn.Module):
 
         self.bn1 = nn.BatchNorm2d(inplanes)
         self.conv1 = dynamic_conv3x3(inplanes, planes, stride)
-        # self.bn2 = nn.BatchNorm2d(planes)
+        self.bn2 = nn.BatchNorm2d(planes)
         self.conv2 = dynamic_conv3x3(planes, planes)
-        # self.bn3 = nn.BatchNorm2d(planes)
+        self.bn3 = nn.BatchNorm2d(planes)
         self.relu = nn.ReLU(inplace=True)
 
         self.downsample = downsample
@@ -42,10 +42,10 @@ class BasicBlock(nn.Module):
                 residual = self.downsample(x)
 
         out = self.conv1(out, keep_rate)
-        # out = self.bn2(out)
+        out = self.bn2(out)
         out = self.relu(out)
         out = self.conv2(out, keep_rate)
-        # out = self.bn3(out)
+        out = self.bn3(out)
 
         out += residual
 
@@ -60,11 +60,11 @@ class Bottleneck(nn.Module):
 
         self.bn1 = nn.BatchNorm2d(inplanes)
         self.conv1 = DynamicConvBN2d(inplanes, planes, kernel_size=1, bias=False)
-        # self.bn2 = nn.BatchNorm2d(planes)
+        # self.bn2 = DynamicBatchNorm2d(planes)
         self.conv2 = DynamicConvBN2d(planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        # self.bn3 = nn.BatchNorm2d(planes)
+        # self.bn3 = DynamicBatchNorm2d(planes)
         self.conv3 = DynamicConvBN2d(planes, planes * Bottleneck.expansion, kernel_size=1, bias=False)
-        # self.bn4 = nn.BatchNorm2d(planes * Bottleneck.expansion)
+        # self.bn4 = DynamicBatchNorm2d(planes * Bottleneck.expansion)
         self.relu = nn.ReLU(inplace=True)
 
         self.downsample = downsample
@@ -86,13 +86,13 @@ class Bottleneck(nn.Module):
                 residual = self.downsample(x)
 
         out = self.conv1(out, keep_rate)
-        # out = self.bn2(out)
+        # out = self.bn2(out, keep_rate)
         out = self.relu(out)
         out = self.conv2(out, keep_rate)
-        # out = self.bn3(out)
+        # out = self.bn3(out, keep_rate)
         out = self.relu(out)
         out = self.conv3(out, keep_rate)
-        # out = self.bn4(out)
+        # out = self.bn4(out, keep_rate)
 
         out += residual
 
@@ -178,7 +178,9 @@ class DynamicPreResNet(nn.Module):
             x = x.view(x.size(0), -1)
             # 2nd place, scale by 1./keep_rate
             # channel_num = round(x.size(1)*keep_rate)
-            # if channel_num < x.size(1):   x *= float(x.size(1))/channel_num
+            # if channel_num < x.size(1):
+            #     x[:, channel_num:] = 0.
+            #     x *= float(x.size(1))/channel_num
             x = self.fc(x)
 
         # need revision here

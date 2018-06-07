@@ -29,6 +29,7 @@ model_names = sorted(name for name in models.__dict__
     and callable(models.__dict__[name]))
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR-10, CIFAR-100 and ImageNet-1k Training')
+parser.add_argument('--exp_name', default='', type=str, help='optional exp name used to store log and checkpoint (default: none)')
 parser.add_argument('--net_type', default='pyramidnet', type=str, help='networktype: resnet, resnext, densenet, pyamidnet, and so on')
 parser.add_argument('--dynamic', dest='dynamic', action='store_true', help='whether to use dynamic training (default: False)')
 parser.add_argument('--no-bottleneck', dest='bottleneck', action='store_false', help='to use basicblock for CIFAR datasets (default: bottleneck)')
@@ -69,9 +70,10 @@ parser.set_defaults(verbose=True)
 args = parser.parse_args()
 args.data_dir += args.dataset
 
-args.exp_name = '{0}_{1}_{2}'.format(args.net_type, args.depth, args.dataset)
-if args.dynamic: args.exp_name = 'dynamic_{0}_lb_{1}'.format(args.exp_name, args.lower_bound)
-if args.net_type=='pyramidnet': args.exp_name+='_alpha_{0}'.format(args.alpha)
+if not args.exp_name:
+    args.exp_name = '{0}_{1}_{2}'.format(args.net_type, args.depth, args.dataset)
+    if args.dynamic: args.exp_name = 'dynamic_{0}_lb_{1}'.format(args.exp_name, args.lower_bound)
+    if args.net_type=='pyramidnet': args.exp_name+='_alpha_{0}'.format(args.alpha)
 args.checkpoint_dir = '{0}{1}/'.format(args.checkpoint_dir, args.exp_name)
 
 args.distributed = (args.world_size > 1)
