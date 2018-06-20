@@ -5,7 +5,7 @@ def main():
     print_logger = logger('log/{}/validate.log'.format(args.exp_name), False, False)
     print_logger.info(vars(args))
 
-    # loading date
+    # loading data
     if args.distributed:
         dist.init_process_group(backend=args.dist_backend, world_size=args.world_size,
                                 init_method=args.dist_url, group_name=args.exp_name)
@@ -16,15 +16,23 @@ def main():
     # create model
     print_logger.info("=> creating model '{}'".format(args.net_type))
     if args.net_type == 'resnet':
-        model = ResNet(args.dataset, args.depth, class_num, args.bottleneck)  # for ResNet
+        model = ResNet(args.dataset, args.depth, class_num, args.bottleneck) # for ResNet
     elif args.net_type == 'preresnet':
-        if args.dynamic: model = DynamicPreResNet(args.dataset, args.depth, class_num, args.bottleneck)  # for Dynamic Pre-activation ResNet
-        else: model = PreResNet(args.dataset, args.depth, class_num, args.bottleneck)  # for Pre-activation ResNet
+        if args.dynamic:
+            if args.groups > 0: model = DynamicGNPreResNet(args.dataset, args.depth, class_num, args.groups, args.bottleneck)
+            else: model = DynamicPreResNet(args.dataset, args.depth, class_num, args.bottleneck)
+        else: model = PreResNet(args.dataset, args.depth, class_num, args.bottleneck) # for Pre-activation ResNet
     elif args.net_type == 'pyramidnet':
-        if args.dynamic: model = DynamicPyramidNet(args.dataset, args.depth, args.alpha, class_num, args.bottleneck)  # for Dynamic PyramidNet
-        else: model = PyramidNet(args.dataset, args.depth, args.alpha, class_num, args.bottleneck)  # for PyramidNet
+        if args.dynamic: model = DynamicPyramidNet(args.dataset, args.depth, args.alpha, class_num, args.bottleneck) # for Dynamic PyramidNet
+        else: model = PyramidNet(args.dataset, args.depth, args.alpha, class_num, args.bottleneck) # for PyramidNet
+    elif args.net_type == 'vgg':
+        if args.dynamic: model = DynamicVGG('VGG{0}'.format(args.depth), args.groups)
+        else: model = VGG('VGG{0}'.format(args.depth))
+    elif args.net_type == 'wrn':
+        if args.dynamic: model = DynamicWideResNet(args.depth, args.alpha, args.groups, args.dropout)
+        else: model = Wide_ResNet(args.depth, args.alpha, args.dropout)
     else:
-        raise Exception('unknown network architecture: {}'.format(args.net_type))
+        raise Exception ('unknown network architecture: {}'.format(args.net_type))
 
     print_logger.info('the number of model parameters: {}'.format(sum([p.data.nelement() for p in model.parameters()])))
 
@@ -48,7 +56,7 @@ def main():
 
     cudnn.benchmark = True
 
-    for keep_rate in torch.range(1.0, 0.20, -0.1):
+    for keep_rate in torch.range(1.0, 0.20, -1./16):
         err1_train, err5_train = run(checkpoint['epoch'], model, train_loader, criterion, print_logger, keep_rate=keep_rate.item())
         err1_val, err5_val = run(checkpoint['epoch'], model, val_loader, criterion, print_logger, keep_rate=keep_rate.item())
         print_logger.info('> Train Set Top 1-err {top1_train:.3f}  Top 5-err {top5_train:.3f}\n'

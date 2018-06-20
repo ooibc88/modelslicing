@@ -1,26 +1,19 @@
 import torch
 import torch.nn as nn
-from .dynamic_conv2d import DynamicConv2d, DynamicConvBN2d
-from torch.distributions import normal
+from models.dynamic_conv2d import DynamicConvGN2d
 import math
-
-
-def dynamic_conv3x3(in_planes, out_planes, stride=1):
-    "3x3 convolution with padding"
-    return DynamicConv2d(in_planes, out_planes, kernel_size=3, stride=stride,
-                     padding=1, bias=False)
 
 class BasicBlock(nn.Module):
     expansion = 1
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None, preact='no_preact'):
+    def __init__(self, inplanes, planes, num_groups=2, stride=1, downsample=None, preact='no_preact'):
         super(BasicBlock, self).__init__()
 
         self.bn1 = nn.BatchNorm2d(inplanes)
-        self.conv1 = dynamic_conv3x3(inplanes, planes, stride)
-        self.bn2 = nn.BatchNorm2d(planes)
-        self.conv2 = dynamic_conv3x3(planes, planes)
-        self.bn3 = nn.BatchNorm2d(planes)
+        self.conv1 = DynamicConvGN2d(num_groups, inplanes, planes, kernel_size=3, stride=stride,
+                     padding=1, bias=False)
+        self.conv2 = DynamicConvGN2d(num_groups, planes, planes, kernel_size=3, stride=stride,
+                     padding=1, bias=False)
         self.relu = nn.ReLU(inplace=True)
 
         self.downsample = downsample
@@ -42,29 +35,23 @@ class BasicBlock(nn.Module):
                 residual = self.downsample(x)
 
         out = self.conv1(out, keep_rate)
-        out = self.bn2(out)
         out = self.relu(out)
         out = self.conv2(out, keep_rate)
-        out = self.bn3(out)
 
         out += residual
 
         return (out, keep_rate)
-
 
 class Bottleneck(nn.Module):
     expansion = 4
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None, preact='no_preact'):
+    def __init__(self, inplanes, planes, num_groups=2, stride=1, downsample=None, preact='no_preact'):
         super(Bottleneck, self).__init__()
 
         self.bn1 = nn.BatchNorm2d(inplanes)
-        self.conv1 = DynamicConvBN2d(inplanes, planes, kernel_size=1, bias=False)
-        # self.bn2 = DynamicBatchNorm2d(planes)
-        self.conv2 = DynamicConvBN2d(planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        # self.bn3 = DynamicBatchNorm2d(planes)
-        self.conv3 = DynamicConvBN2d(planes, planes * Bottleneck.expansion, kernel_size=1, bias=False)
-        # self.bn4 = DynamicBatchNorm2d(planes * Bottleneck.expansion)
+        self.conv1 = DynamicConvGN2d(num_groups, inplanes, planes, kernel_size=1, bias=False)
+        self.conv2 = DynamicConvGN2d(num_groups, planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.conv3 = DynamicConvGN2d(num_groups, planes, planes * Bottleneck.expansion, kernel_size=1, bias=False)
         self.relu = nn.ReLU(inplace=True)
 
         self.downsample = downsample
@@ -86,22 +73,19 @@ class Bottleneck(nn.Module):
                 residual = self.downsample(x)
 
         out = self.conv1(out, keep_rate)
-        # out = self.bn2(out, keep_rate)
         out = self.relu(out)
         out = self.conv2(out, keep_rate)
-        # out = self.bn3(out, keep_rate)
         out = self.relu(out)
         out = self.conv3(out, keep_rate)
-        # out = self.bn4(out, keep_rate)
 
         out += residual
 
         return (out, keep_rate)
 
 
-class DynamicPreResNet(nn.Module):
-    def __init__(self, dataset, depth, num_classes, bottleneck=False):
-        super(DynamicPreResNet, self).__init__()
+class DynamicGNPreResNet(nn.Module):
+    def __init__(self, dataset, depth, num_classes, num_groups=2, bottleneck=True):
+        super(DynamicGNPreResNet, self).__init__()
         self.dataset = dataset
         if self.dataset.startswith('cifar'):
             self.inplanes = 16
@@ -113,9 +97,9 @@ class DynamicPreResNet(nn.Module):
                 block = BasicBlock
 
             self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=3, stride=1, padding=1, bias=False)
-            self.layer1 = self._make_layer(block, 16, n)
-            self.layer2 = self._make_layer(block, 32, n, stride=2)
-            self.layer3 = self._make_layer(block, 64, n, stride=2)
+            self.layer1 = self._make_layer(block, 16, n, num_groups=num_groups)
+            self.layer2 = self._make_layer(block, 32, n, stride=2, num_groups=num_groups)
+            self.layer3 = self._make_layer(block, 64, n, stride=2, num_groups=num_groups)
             self.bn1 = nn.BatchNorm2d(64 * block.expansion)
             self.relu = nn.ReLU(inplace=True)
             self.avgpool = nn.AvgPool2d(8)
@@ -148,7 +132,7 @@ class DynamicPreResNet(nn.Module):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
 
-    def _make_layer(self, block, planes, blocks, stride=1, preact='preact'):
+    def _make_layer(self, block, planes, blocks, num_groups=2, stride=1, preact='preact'):
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
@@ -157,10 +141,10 @@ class DynamicPreResNet(nn.Module):
             )
 
         layers = []
-        layers.append(block(self.inplanes, planes, stride, downsample, preact))
+        layers.append(block(self.inplanes, planes, num_groups, stride, downsample, preact))
         self.inplanes = planes * block.expansion
         for i in range(1, blocks):
-            layers.append(block(self.inplanes, planes))
+            layers.append(block(self.inplanes, planes, num_groups=num_groups))
 
         return nn.Sequential(*layers)
 
@@ -202,3 +186,4 @@ class DynamicPreResNet(nn.Module):
             x = self.fc(x)
 
         return x
+

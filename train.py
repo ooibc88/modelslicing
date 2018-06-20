@@ -15,27 +15,24 @@ import torch.utils.data.distributed
 import torchvision.models as models
 from torch.distributions import normal
 
-from models.resnet import ResNet
-from models.preresnet import PreResNet
-from models.DynamicPreResnet import DynamicPreResNet
-from models.PyramidNet import PyramidNet
-from models.DynamicPyramidNet import DynamicPyramidNet
+from models import ResNet, PreResNet, PyramidNet, VGG, Wide_ResNet
+from models import DynamicPreResNet, DynamicGNPreResNet, DynamicPyramidNet, DynamicVGG, DynamicWideResNet
+
 from data_loader import data_loader
 from tensorboard_logger import configure, log_value
 from utilities import logger, AverageMeter, timeSince
-
-model_names = sorted(name for name in models.__dict__
-    if name.islower() and not name.startswith("__")
-    and callable(models.__dict__[name]))
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR-10, CIFAR-100 and ImageNet-1k Training')
 parser.add_argument('--exp_name', default='', type=str, help='optional exp name used to store log and checkpoint (default: none)')
 parser.add_argument('--net_type', default='pyramidnet', type=str, help='networktype: resnet, resnext, densenet, pyamidnet, and so on')
 parser.add_argument('--dynamic', dest='dynamic', action='store_true', help='whether to use dynamic training (default: False)')
 parser.add_argument('--no-bottleneck', dest='bottleneck', action='store_false', help='to use basicblock for CIFAR datasets (default: bottleneck)')
+parser.add_argument('--groups', default=0, type=int, help='group num for GroupNum (default: 0, no use)')
 parser.add_argument('--alpha', default=300, type=int, help='number of new channel increases per depth (default: 300)')
 parser.add_argument('--depth', default=32, type=int, help='depth of the network (default: 32)')
+parser.add_argument('--dropout', default=0.0, type=float, help='dropout rate (default: 0.0)')
 parser.add_argument('--lower_bound', default=0.4, type=float, help='lower bound keep rate drawn from distribution')
+parser.add_argument('--fixed', dest='fixed', action='store_true', help='whether to fix keep rate with lower bound during training (default: False)')
 
 parser.add_argument('--epoch', default=300, type=int, metavar='N', help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N', help='manual epoch number (useful on restarts)')
@@ -44,7 +41,6 @@ parser.add_argument('--lr', '--learning-rate', default=0.1, type=float, metavar=
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M', help='momentum')
 parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float, metavar='W', help='weight decay (default: 1e-4)')
 
-parser.add_argument('--pretrained', dest='pretrained', action='store_true', help='use pre-trained model on ImageNet-1k dataset')
 parser.add_argument('--resume', default='', type=str, metavar='PATH', help='path to latest checkpoint (default: none)')
 parser.add_argument('--resume_best', dest='resume_best', action='store_true', help='whether to resume best_checkpoint (default: False)')
 parser.add_argument('--checkpoint-dir', default='/home/shaofeng/ncrs-hdd1/checkpoint/', type=str, metavar='PATH', help='path to checkpoint')
@@ -62,6 +58,7 @@ parser.add_argument('--no-verbose', dest='verbose', action='store_false', help='
 parser.add_argument('--tensorboard', help='Log progress to TensorBoard', action='store_true')
 
 parser.set_defaults(dynamic=False)
+parser.set_defaults(fixed=False)
 parser.set_defaults(resume_best=False)
 parser.set_defaults(bottleneck=True)
 parser.set_defaults(augment=True)
@@ -70,10 +67,7 @@ parser.set_defaults(verbose=True)
 args = parser.parse_args()
 args.data_dir += args.dataset
 
-if not args.exp_name:
-    args.exp_name = '{0}_{1}_{2}'.format(args.net_type, args.depth, args.dataset)
-    if args.dynamic: args.exp_name = 'dynamic_{0}_lb_{1}'.format(args.exp_name, args.lower_bound)
-    if args.net_type=='pyramidnet': args.exp_name+='_alpha_{0}'.format(args.alpha)
+if not args.exp_name: args.exp_name = '{0}_{1}_{2}'.format(args.net_type, args.depth, args.dataset)
 args.checkpoint_dir = '{0}{1}/'.format(args.checkpoint_dir, args.exp_name)
 
 args.distributed = (args.world_size > 1)
@@ -94,25 +88,26 @@ def main():
     else:
         train_loader, val_loader, class_num = data_loader(args)
     
-    if args.pretrained:
-        print_logger.info("=> using pre-trained model '{}'".format(args.net_type))
-        try:
-            model = models.__dict__[str(args.net_type)](pretrained=True)
-        except (KeyError, TypeError):
-            print_logger.info('unknown model! \n torchvision provides the follwoing pretrained model:', model_names)
-            return
+
+    print_logger.info("=> creating model '{}'".format(args.net_type))
+    if args.net_type == 'resnet':
+        model = ResNet(args.dataset, args.depth, class_num, args.bottleneck) # for ResNet
+    elif args.net_type == 'preresnet':
+        if args.dynamic:
+            if args.groups > 0: model = DynamicGNPreResNet(args.dataset, args.depth, class_num, args.groups, args.bottleneck)
+            else: model = DynamicPreResNet(args.dataset, args.depth, class_num, args.bottleneck)
+        else: model = PreResNet(args.dataset, args.depth, class_num, args.bottleneck) # for Pre-activation ResNet
+    elif args.net_type == 'pyramidnet':
+        if args.dynamic: model = DynamicPyramidNet(args.dataset, args.depth, args.alpha, class_num, args.bottleneck) # for Dynamic PyramidNet
+        else: model = PyramidNet(args.dataset, args.depth, args.alpha, class_num, args.bottleneck) # for PyramidNet
+    elif args.net_type == 'vgg':
+        if args.dynamic: model = DynamicVGG('VGG{0}'.format(args.depth), args.groups)
+        else: model = VGG('VGG{0}'.format(args.depth))
+    elif args.net_type == 'wrn':
+        if args.dynamic: model = DynamicWideResNet(args.depth, args.alpha, args.groups, args.dropout)
+        else: model = Wide_ResNet(args.depth, args.alpha, args.dropout)
     else:
-        print_logger.info("=> creating model '{}'".format(args.net_type))
-        if args.net_type == 'resnet':
-            model = ResNet(args.dataset, args.depth, class_num, args.bottleneck) # for ResNet
-        elif args.net_type == 'preresnet':
-            if args.dynamic: model = DynamicPreResNet(args.dataset, args.depth, class_num, args.bottleneck) # for Dynamic Pre-activation ResNet
-            else: model = PreResNet(args.dataset, args.depth, class_num, args.bottleneck) # for Pre-activation ResNet
-        elif args.net_type == 'pyramidnet':
-            if args.dynamic: model = DynamicPyramidNet(args.dataset, args.depth, args.alpha, class_num, args.bottleneck) # for Dynamic PyramidNet
-            else: model = PyramidNet(args.dataset, args.depth, args.alpha, class_num, args.bottleneck) # for PyramidNet
-        else:
-            raise Exception ('unknown network architecture: {}'.format(args.net_type))
+        raise Exception ('unknown network architecture: {}'.format(args.net_type))
 
     print_logger.info('the number of model parameters: {}'.format(sum([p.data.nelement() for p in model.parameters()])))
 
@@ -123,6 +118,7 @@ def main():
     optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum,
                                 weight_decay=args.weight_decay, nesterov=True)
     scheduler = lr_scheduler.MultiStepLR(optimizer, [int(args.epoch * 0.5), int(args.epoch * 0.75)], gamma=0.1)
+    if args.net_type == 'wrn': scheduler = lr_scheduler.MultiStepLR(optimizer, [60, 120, 160], gamma=0.2)
 
     # optionally resume from a checkpoint
     if args.resume:
@@ -153,7 +149,7 @@ def main():
         run(epoch, model, train_loader, criterion, print_logger, optimizer=optimizer, dist=distributions)
         
         # evaluate on validation set
-        err1, err5 = run(epoch, model, val_loader, criterion, print_logger)
+        err1, err5 = run(epoch, model, val_loader, criterion, print_logger, keep_rate=(args.lower_bound if args.fixed else 1.0))
         
         # record best prec@1 and save checkpoint
         is_best = err1 <= best_err1
@@ -199,6 +195,7 @@ def draw_keep_rate(dist, progress=1., lower_bound=args.lower_bound):
     return max(lower_bound, min(1., keep_rate))
 
 def run(epoch, model, data_loader, criterion, print_logger, optimizer=None, keep_rate=1., dist=None):
+    global args
     is_train = True if optimizer!=None else False
     if is_train: model.train()
     else: model.eval()
@@ -213,7 +210,8 @@ def run(epoch, model, data_loader, criterion, print_logger, optimizer=None, keep
 
         if is_train:
             if args.dynamic:
-                keep_rate = draw_keep_rate(dist, progress=float(idx)/len(data_loader))
+                if args.fixed:  keep_rate = args.lower_bound
+                else:   keep_rate = draw_keep_rate(dist, progress=float(idx)/len(data_loader))
                 output = model(input, keep_rate)
             else:
                 output = model(input)

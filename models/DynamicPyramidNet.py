@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .dynamic_conv2d import DynamicConv2d
+from models.dynamic_conv2d import DynamicConv2d
 from torch.distributions import normal
 import math
 
