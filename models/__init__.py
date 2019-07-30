@@ -1,13 +1,9 @@
-from .vgg import *
-from .preresnet import *
-from .resnet import *
-from .PyramidNet import *
-from .WRN import *
+from .model_slicing import *
 
-from .dynamic_conv2d import *
+from .resnet_cifar import *
+from .vgg_cifar import *
 
-from .DynamicVgg import *
-from .DynamicPreResnet import *
-from .DynamicGNPreResnet import *
-from .DynamicPyramidNet import *
-from .DynamicWRN import *
+from .resnet_imagenet import *
+from .vgg_imagenet import *
+from .googlenet_imagenet import *
+from .mobilenetv2 import *

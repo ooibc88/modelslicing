@@ -13,5 +13,15 @@ test.py
 # python cache
 __pycache__/
 
-# info
-info
+# log file
+log
+
+# fig file
+fig
+
+# checkpoint
+checkpoint
+
+# bash files
+*.sh
+info.py

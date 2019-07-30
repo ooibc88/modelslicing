@@ -1,200 +1,155 @@
-import argparse
 import os
-import shutil
+import argparse
 import time
+import shutil
+from collections import OrderedDict
+import importlib
 
 import torch
-import torch.nn as nn
-import torch.nn.parallel
-import torch.backends.cudnn as cudnn
-import torch.distributed as dist
-import torch.optim
 from torch.optim import lr_scheduler
-import torch.utils.data
-import torch.utils.data.distributed
-import torchvision.models as models
-from torch.distributions import normal
-
-from models import ResNet, PreResNet, PyramidNet, VGG, Wide_ResNet
-from models import DynamicPreResNet, DynamicGNPreResNet, DynamicPyramidNet, DynamicVGG, DynamicWideResNet
+import torch.backends.cudnn as cudnn
 
 from data_loader import data_loader
-from tensorboard_logger import configure, log_value
-from utilities import logger, AverageMeter, timeSince
+from utilities import logger, AverageMeter, accuracy, timeSince
+from models import upgrade_dynamic_layers, create_sr_scheduler
 
-parser = argparse.ArgumentParser(description='PyTorch CIFAR-10, CIFAR-100 and ImageNet-1k Training')
+parser = argparse.ArgumentParser(description='CIFAR-10, CIFAR-100 and ImageNet-1k Model Slicing Training')
 parser.add_argument('--exp_name', default='', type=str, help='optional exp name used to store log and checkpoint (default: none)')
-parser.add_argument('--net_type', default='pyramidnet', type=str, help='networktype: resnet, resnext, densenet, pyamidnet, and so on')
-parser.add_argument('--dynamic', dest='dynamic', action='store_true', help='whether to use dynamic training (default: False)')
-parser.add_argument('--no-bottleneck', dest='bottleneck', action='store_false', help='to use basicblock for CIFAR datasets (default: bottleneck)')
-parser.add_argument('--groups', default=0, type=int, help='group num for GroupNum (default: 0, no use)')
-parser.add_argument('--alpha', default=300, type=int, help='number of new channel increases per depth (default: 300)')
-parser.add_argument('--depth', default=32, type=int, help='depth of the network (default: 32)')
-parser.add_argument('--dropout', default=0.0, type=float, help='dropout rate (default: 0.0)')
-parser.add_argument('--lower_bound', default=0.4, type=float, help='lower bound keep rate drawn from distribution')
-parser.add_argument('--fixed', dest='fixed', action='store_true', help='whether to fix keep rate with lower bound during training (default: False)')
+parser.add_argument('--net_type', default='resnet', type=str, help='network type: vgg, resnet, and so on')
+parser.add_argument('--groups', default=8, type=int, help='group num for Group Normalization (default: 0, no use)')
+parser.add_argument('--depth', default=50, type=int, help='depth of the network')
+parser.add_argument('--arg1', default=1.0, type=float, metavar='M', help='additional model arg, k for ResNet')
+
+parser.add_argument('--sr_list', nargs='+', help='the slice rate list in descending order', required=True)
+parser.add_argument('--sr_train_prob', nargs='+', help='the prob of picking subnet corresponding to sr_list')
+parser.add_argument('--sr_scheduler_type', default='random', type=str, help='slice rate scheduler, support random, random[_min][_max], round_robin')
+parser.add_argument('--sr_rand_num', default=1, type=int, metavar='N', help='the number of random sampled slice rate except min/max (default: 1)')
 
 parser.add_argument('--epoch', default=300, type=int, metavar='N', help='number of total epochs to run')
-parser.add_argument('--start-epoch', default=0, type=int, metavar='N', help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch_size', default=128, type=int, metavar='N', help='mini-batch size (default: 256)')
-parser.add_argument('--lr', '--learning-rate', default=0.1, type=float, metavar='LR', help='initial learning rate')
+parser.add_argument('--start_epoch', default=0, type=int, metavar='N', help='manual epoch number (useful on restarts)')
+parser.add_argument('--batch_size', '-b', default=128, type=int, metavar='N', help='mini-batch size')
+parser.add_argument('--lr', default=0.1, type=float, metavar='LR', help='initial learning rate')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M', help='momentum')
-parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float, metavar='W', help='weight decay (default: 1e-4)')
+parser.add_argument('--weight_decay', '--wd', default=1e-4, type=float, metavar='W', help='weight decay (default: 1e-4)')
+parser.add_argument('--cosine', dest='cosine', action='store_true', help='cosine LR scheduler')
 
 parser.add_argument('--resume', default='', type=str, metavar='PATH', help='path to latest checkpoint (default: none)')
-parser.add_argument('--resume_best', dest='resume_best', action='store_true', help='whether to resume best_checkpoint (default: False)')
-parser.add_argument('--checkpoint-dir', default='/home/shaofeng/ncrs-hdd1/checkpoint/', type=str, metavar='PATH', help='path to checkpoint')
-
-parser.add_argument('--world-size', default=1, type=int, help='number of distributed processes')
-parser.add_argument('--dist-url', default='file:///home/shaofeng/share_test', type=str, help='url used to set up distributed training')
-parser.add_argument('--dist-backend', default='gloo', type=str, help='distributed backend')
+parser.add_argument('--resume_best', dest='resume_best', action='store_true', help='whether to resume the best_checkpoint (default: False)')
+parser.add_argument('--checkpoint_dir', default='~/checkpoint/', type=str, metavar='PATH', help='path to checkpoint')
 
 parser.add_argument('--workers', default=4, type=int, metavar='N', help='number of data loading workers (default: 4)')
-parser.add_argument('--data-dir', default='./data/', type=str, metavar='PATH', help='path to dataset')
+parser.add_argument('--data_dir', default='./data/', type=str, metavar='PATH', help='path to dataset')
+parser.add_argument('--log_dir', default='./log/', type=str, metavar='PATH', help='path to log')
 parser.add_argument('--dataset', dest='dataset', default='cifar10', type=str, help='dataset (options: cifar10, cifar100, and imagenet)')
-parser.add_argument('--no-augment', dest='augment', action='store_false', help='whether to use standard augmentation for CIFAR datasets (default: True)')
+parser.add_argument('--no_augment', dest='augment', action='store_false', help='whether to use standard augmentation for the datasets (default: True)')
 
-parser.add_argument('--no-verbose', dest='verbose', action='store_false', help='to print the status at every iteration')
-parser.add_argument('--tensorboard', help='Log progress to TensorBoard', action='store_true')
+parser.add_argument('--log_freq', default=10, type=int, metavar='N', help='log frequency')
 
-parser.set_defaults(dynamic=False)
-parser.set_defaults(fixed=False)
+parser.set_defaults(cosine=False)
 parser.set_defaults(resume_best=False)
-parser.set_defaults(bottleneck=True)
 parser.set_defaults(augment=True)
-parser.set_defaults(verbose=True)
+
 # initialize all global variables
 args = parser.parse_args()
 args.data_dir += args.dataset
-
+args.sr_list = list(map(float, args.sr_list))
+if args.sr_train_prob: args.sr_train_prob = list(map(float, args.sr_train_prob))
 if not args.exp_name: args.exp_name = '{0}_{1}_{2}'.format(args.net_type, args.depth, args.dataset)
-args.checkpoint_dir = '{0}{1}/'.format(args.checkpoint_dir, args.exp_name)
-
-args.distributed = (args.world_size > 1)
+args.checkpoint_dir = '{0}{1}/'.format(os.path.expanduser(args.checkpoint_dir), args.exp_name)
+args.log_path = '{0}{1}/log.txt'.format(args.log_dir, args.exp_name)
 best_err1, best_err5 = 100., 100.
+
+# create log dir
 if not os.path.isdir('log/{}'.format(args.exp_name)):
     os.mkdir('log/{}'.format(args.exp_name))
 
+# load dataset
+train_loader, val_loader, args.class_num = data_loader(args)
+
 def main():
     global args, best_err1, best_err5
-    print_logger = logger('log/{}/stdout.log'.format(args.exp_name), False, False)
+    print_logger = logger(args.log_path, True, True)
     print_logger.info(vars(args))
 
-    if args.tensorboard: configure("runs/%s" % (args.exp_name))
-    if args.distributed:
-        dist.init_process_group(backend=args.dist_backend, world_size=args.world_size,
-                                init_method=args.dist_url, group_name=args.exp_name)
-        train_loader, val_loader, class_num, train_sampler = data_loader(args)
-    else:
-        train_loader, val_loader, class_num = data_loader(args)
-    
+    # create model and upgrade model to support model slicing
+    model = create_model(args, print_logger)
+    model = upgrade_dynamic_layers(model, args.groups, args.sr_list)
+    model = torch.nn.DataParallel(model).cuda()
 
-    print_logger.info("=> creating model '{}'".format(args.net_type))
-    if args.net_type == 'resnet':
-        model = ResNet(args.dataset, args.depth, class_num, args.bottleneck) # for ResNet
-    elif args.net_type == 'preresnet':
-        if args.dynamic:
-            if args.groups > 0: model = DynamicGNPreResNet(args.dataset, args.depth, class_num, args.groups, args.bottleneck)
-            else: model = DynamicPreResNet(args.dataset, args.depth, class_num, args.bottleneck)
-        else: model = PreResNet(args.dataset, args.depth, class_num, args.bottleneck) # for Pre-activation ResNet
-    elif args.net_type == 'pyramidnet':
-        if args.dynamic: model = DynamicPyramidNet(args.dataset, args.depth, args.alpha, class_num, args.bottleneck) # for Dynamic PyramidNet
-        else: model = PyramidNet(args.dataset, args.depth, args.alpha, class_num, args.bottleneck) # for PyramidNet
-    elif args.net_type == 'vgg':
-        if args.dynamic: model = DynamicVGG('VGG{0}'.format(args.depth), args.groups)
-        else: model = VGG('VGG{0}'.format(args.depth))
-    elif args.net_type == 'wrn':
-        if args.dynamic: model = DynamicWideResNet(args.depth, args.alpha, args.groups, args.dropout)
-        else: model = Wide_ResNet(args.depth, args.alpha, args.dropout)
-    else:
-        raise Exception ('unknown network architecture: {}'.format(args.net_type))
-
-    print_logger.info('the number of model parameters: {}'.format(sum([p.data.nelement() for p in model.parameters()])))
-
-    if args.distributed: model = torch.nn.parallel.DistributedDataParallel(model).cuda()
-    else: model = torch.nn.DataParallel(model).cuda()
-
-    criterion = nn.CrossEntropyLoss().cuda()
+    criterion = torch.nn.CrossEntropyLoss().cuda()
     optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum,
                                 weight_decay=args.weight_decay, nesterov=True)
-    scheduler = lr_scheduler.MultiStepLR(optimizer, [int(args.epoch * 0.5), int(args.epoch * 0.75)], gamma=0.1)
-    if args.net_type == 'wrn': scheduler = lr_scheduler.MultiStepLR(optimizer, [60, 120, 160], gamma=0.2)
+    scheduler = create_lr_scheduler(args, optimizer, print_logger)
 
-    # optionally resume from a checkpoint
     if args.resume:
-        print_logger.info("=> loading checkpoint '{}'".format(args.resume))
-
-        if os.path.isfile(args.resume): checkpoint = torch.load(args.resume)
-        elif args.resume == 'checkpoint': checkpoint = torch.load('{0}{1}'.format(args.checkpoint_dir, 'checkpoint.ckpt'))
-        else: print_logger.info("=> no checkpoint found at '{}'".format(args.resume)); return
-
-        args.start_epoch = checkpoint['epoch'] + 1  # start epoch += 1
-        model.load_state_dict(checkpoint['state_dict'])
-        best_err1 = checkpoint['best_err1']
-        best_err5 = checkpoint['best_err5']
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        scheduler.load_state_dict(checkpoint['scheduler'])
-        print_logger.info("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
+        checkpoint = load_checkpoint(print_logger)
+        epoch, best_err1, best_err5, model_state, optimizer_state, scheduler_state = checkpoint.values()
+        args.start_epoch = epoch+1
+        model.load_state_dict(model_state)
+        optimizer.load_state_dict(optimizer_state)
+        scheduler.load_state_dict(optimizer_state)
+        print_logger.info("==> finish loading checkpoint '{}' (epoch {})".format(args.resume, epoch))
 
     cudnn.benchmark = True
 
-    # used if args.dynamic:
-    distributions = normal.Normal(1., 1. / 3.)
+    # start training
+    sr_scheduler = create_sr_scheduler(args.sr_scheduler_type, args.sr_rand_num, args.sr_list, args.sr_train_prob)
     for epoch in range(args.start_epoch, args.epoch):
-        if args.distributed: train_sampler.set_epoch(epoch)
         scheduler.step(epoch)
         print_logger.info('Epoch: [{0}/{1}]\tLR: {LR:.6f}'.format(epoch, args.epoch, LR=scheduler.get_lr()[0]))
-            
-        # train for one epoch
-        run(epoch, model, train_loader, criterion, print_logger, optimizer=optimizer, dist=distributions)
-        
-        # evaluate on validation set
-        err1, err5 = run(epoch, model, val_loader, criterion, print_logger, keep_rate=(args.lower_bound if args.fixed else 1.0))
-        
-        # record best prec@1 and save checkpoint
+
+        # train one epoch
+        run(epoch, model, train_loader, criterion, print_logger, sr_scheduler, optimizer)
+
+        # evaluate on all the sr_idxs, from the smallest subnet to the largest
+        for sr_idx in reversed(range(len(args.sr_list))):
+            args.sr_idx = sr_idx
+            model.module.update_sr_idx(sr_idx)
+            err1, err5 = run(epoch, model, val_loader, criterion, print_logger)
+
+        # record the best prec@1 for the largest subnet and save checkpoint
         is_best = err1 <= best_err1
         best_err1 = min(err1, best_err1)
         if is_best: best_err5 = err5
         print_logger.info('Current best accuracy:\ttop1 = {top1:.4f} | top5 = {top5:.4f}'.format(top1=best_err1, top5=best_err5))
-        save_checkpoint({
-            'epoch': epoch,
-            'arch': args.net_type,
-            'state_dict': model.state_dict(),
-            'best_err1': best_err1,
-            'best_err5': best_err5,
-            'optimizer': optimizer.state_dict(),
-            'scheduler': scheduler.state_dict(),
-        }, is_best, file_dir=args.checkpoint_dir)
-    print_logger.info('Best accuracy:\ttop1 = {top1:.4f} | top5 = {top5:.4f}'.format(top1=best_err1, top5=best_err5))
+        save_checkpoint(OrderedDict([('epoch', epoch), ('best_err1', best_err1), ('best_err5', best_err5),
+            ('model_state', model.state_dict()), ('optimizer_state', optimizer.state_dict()), ('scheduler_state', scheduler.state_dict())]),
+            is_best, args.checkpoint_dir)
 
-def save_checkpoint(checkpoint, is_best, file_dir, file_name='checkpoint.ckpt'):
-    if not os.path.exists(file_dir): os.makedirs(file_dir)
-    ckpt_name = "{0}{1}".format(file_dir, file_name)
+def create_model(args, print_logger):
+    print_logger.info("==> creating model '{}'".format(args.net_type))
+    models = importlib.import_module('models')
+    if args.dataset.startswith('cifar'): model = getattr(models, 'cifar_{0}'.format(args.net_type))(args)
+    elif args.dataset == 'imagenet': model = getattr(models, 'imagenet_{0}'.format(args.net_type))(args)
+    print_logger.info('the number of model parameters: {}'.format(sum([p.data.nelement() for p in model.parameters()])))
+    return model
+
+def create_lr_scheduler(args, optimizer, print_logger):
+    if args.cosine: scheduler = lr_scheduler.CosineAnnealingLR(optimizer, args.epoch)
+    elif args.dataset.startswith('cifar'): scheduler = lr_scheduler.MultiStepLR(optimizer, [int(args.epoch*0.5), int(args.epoch*0.75)], gamma=0.1)
+    elif args.dataset == 'imagenet': scheduler = lr_scheduler.MultiStepLR(optimizer, [int(args.epoch/3.), int(args.epoch*2/3.)], gamma=0.1)
+    else: raise Exception('unknown scheduler for dataset: {}'.format(args.dataset))
+    return scheduler
+
+def load_checkpoint(print_logger):
+    print_logger.info("==> loading checkpoint '{}'".format(args.resume))
+
+    if os.path.isfile(args.resume):
+        checkpoint = torch.load(args.resume)
+    elif args.resume == 'checkpoint':
+        if args.resume_best: checkpoint = torch.load('{0}{1}'.format(args.checkpoint_dir, 'best_checkpoint.ckpt'))
+        else: checkpoint = torch.load('{0}{1}'.format(args.checkpoint_dir, 'checkpoint.ckpt'))
+    else:
+        raise Exception("=> no checkpoint found at '{}'".format(args.resume))
+    return checkpoint
+
+def save_checkpoint(checkpoint, is_best, checkpoint_dir, checkpoint_name='checkpoint.ckpt'):
+    if not os.path.exists(checkpoint_dir): os.makedirs(checkpoint_dir)
+    ckpt_name = "{0}{1}".format(checkpoint_dir, checkpoint_name)
     torch.save(checkpoint, ckpt_name)
-    if is_best: shutil.copyfile(ckpt_name, "{0}{1}".format(file_dir, 'best_'+file_name))
+    if is_best: shutil.copyfile(ckpt_name, "{0}{1}".format(checkpoint_dir, 'best_' + checkpoint_name))
 
-def accuracy(output, target, topk=(1,)):
-    """Computes the precision@k for the specified values of k"""
-    maxk = max(topk)
-    batch_size = target.size(0)
-
-    _, pred = output.topk(maxk, 1, True, True)
-    pred = pred.t()
-    correct = pred.eq(target.view(1, -1).expand_as(pred))
-
-    res = []
-    for k in topk:
-        correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
-        wrong_k = batch_size - correct_k
-        res.append(wrong_k.mul_(100.0 / batch_size).item())
-
-    return res
-
-def draw_keep_rate(dist, progress=1., lower_bound=args.lower_bound):
-    keep_rate = dist.sample().item()
-    return max(lower_bound, min(1., keep_rate))
-
-def run(epoch, model, data_loader, criterion, print_logger, optimizer=None, keep_rate=1., dist=None):
+def run(epoch, model, data_loader, criterion, print_logger, sr_scheduler=None, optimizer=None):
     global args
     is_train = True if optimizer!=None else False
     if is_train: model.train()
@@ -205,49 +160,46 @@ def run(epoch, model, data_loader, criterion, print_logger, optimizer=None, keep
 
     timestamp = time.time()
     for idx, (input, target) in enumerate(data_loader):
-        input = input.cuda(non_blocking=True)
-        target = target.cuda(non_blocking=True)
-
+        # print('start batch training', time.time())
+        if torch.cuda.is_available():
+            input = input.cuda(non_blocking=True)
+            target = target.cuda(non_blocking=True)
+        # print('loaded data to cuda', time.time())
         if is_train:
-            if args.dynamic:
-                if args.fixed:  keep_rate = args.lower_bound
-                else:   keep_rate = draw_keep_rate(dist, progress=float(idx)/len(data_loader))
-                output = model(input, keep_rate)
-            else:
-                output = model(input)
-            loss = criterion(output, target)
             optimizer.zero_grad()
-            loss.backward()
+
+            for args.sr_idx in next(sr_scheduler):
+                # update slice rate idx
+                model.module.update_sr_idx(args.sr_idx) # DataParallel .module
+
+                output = model(input)
+                loss = criterion(output, target)
+                loss.backward()
+
             optimizer.step()
         else:
             with torch.no_grad():
-                if args.dynamic: output = model(input, keep_rate)
-                else: output = model(input)
+                output = model(input)
                 loss = criterion(output, target)
-
+        # print('finnish batch training', time.time())
         err1, err5 = accuracy(output, target, topk=(1,5))
         loss_avg.update(loss.item(), input.size()[0])
         top1_avg.update(err1, input.size()[0])
         top5_avg.update(err5, input.size()[0])
 
-        batch_time_avg.update(time.time()-timestamp)
-        timestamp = time.time()
+        batch_time_avg.update(time.time()-timestamp);timestamp = time.time()
 
-        if args.verbose == True:
-            print_logger.info('Epoch: [{0}/{1}][{2}/{3}]\t'
-                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  '{4}Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                  'Top 1-err {top1.val:.4f} ({top1.avg:.4f})\t'
-                  'Top 5-err {top5.val:.4f} ({top5.avg:.4f})'.format(
-                epoch, args.epoch, idx, len(data_loader), ('keep_rate {0:.4f}\t'.format(keep_rate) if args.dynamic else ''),
-                batch_time=batch_time_avg, loss=loss_avg, top1=top1_avg, top5=top5_avg))
+        # print('start logging', time.time())
+        if idx % args.log_freq == 0:
+            print_logger.info('Epoch: [{0}/{1}][{2}/{3}][SR-{4}]\t'
+                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\tLoss {loss.val:.4f} ({loss.avg:.4f})\t'
+                  'Top 1-err {top1.val:.4f} ({top1.avg:.4f})\tTop 5-err {top5.val:.4f} ({top5.avg:.4f})'.format(
+                epoch, args.epoch, idx, len(data_loader), args.sr_list[args.sr_idx], batch_time=batch_time_avg, loss=loss_avg, top1=top1_avg, top5=top5_avg))
 
-    print_logger.info('* Epoch: [{0}/{1}]{2:>6s}  Total Time: {3}\tTop 1-err {top1.avg:.3f}  Top 5-err {top5.avg:.3f}\tTest Loss {loss.avg:.3f}'.format(
-        epoch, args.epoch, ('train' if optimizer is not None else 'val'), timeSince(s=batch_time_avg.sum), top1=top1_avg, top5=top5_avg, loss=loss_avg))
-    if args.tensorboard:
-        log_value('train_loss', loss_avg.avg, epoch)
-        log_value('train_error', top1_avg.avg, epoch)
+    print_logger.info('* Epoch: [{0}/{1}]{2:>8s}  Total Time: {3}\tTop 1-err {top1.avg:.4f}  Top 5-err {top5.avg:.4f}\tTest Loss {loss.avg:.4f}'.format(
+        epoch, args.epoch, ('[train]' if is_train else '[val]'), timeSince(s=batch_time_avg.sum), top1=top1_avg, top5=top5_avg, loss=loss_avg))
     return top1_avg.avg, top5_avg.avg
+
 
 if __name__ == '__main__':
     main()

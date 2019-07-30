@@ -30,7 +30,7 @@ def data_loader(args):
                 batch_size=args.batch_size, shuffle=True, num_workers=args.workers, pin_memory=True)
             val_loader = torch.utils.data.DataLoader(
                 datasets.CIFAR100(args.data_dir, train=False, transform=transform_test),
-                batch_size=args.batch_size, shuffle=True, num_workers=args.workers, pin_memory=True)
+                batch_size=args.batch_size, shuffle=False, num_workers=args.workers, pin_memory=True)
             class_num = 100
         elif args.dataset == 'cifar10':
             train_loader = torch.utils.data.DataLoader(
@@ -38,7 +38,7 @@ def data_loader(args):
                 batch_size=args.batch_size, shuffle=True, num_workers=args.workers, pin_memory=True)
             val_loader = torch.utils.data.DataLoader(
                 datasets.CIFAR10(args.data_dir, train=False, transform=transform_test),
-                batch_size=args.batch_size, shuffle=True, num_workers=args.workers, pin_memory=True)
+                batch_size=args.batch_size, shuffle=False, num_workers=args.workers, pin_memory=True)
             class_num = 10
         else:
             raise Exception ('unknown dataset: {}'.format(args.dataset))
@@ -59,14 +59,9 @@ def data_loader(args):
                 normalize,
             ]))
 
-        if args.distributed:
-            train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-        else:
-            train_sampler = None
-
         train_loader = torch.utils.data.DataLoader(
-            train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
-            num_workers=args.workers, pin_memory=True, sampler=train_sampler)
+            train_dataset, batch_size=args.batch_size, shuffle=True,
+            num_workers=args.workers, pin_memory=True)
 
         val_loader = torch.utils.data.DataLoader(
             datasets.ImageFolder(valdir, transforms.Compose([
@@ -77,8 +72,9 @@ def data_loader(args):
             ])),
             batch_size=args.batch_size, shuffle=False,
             num_workers=args.workers, pin_memory=True)
+
         class_num = 1000
-        return train_loader, val_loader, class_num, train_sampler
+        return train_loader, val_loader, class_num
 
     else:
         raise Exception ('unknown dataset: {}'.format(args.dataset))
