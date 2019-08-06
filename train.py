@@ -10,7 +10,7 @@ from torch.optim import lr_scheduler
 import torch.backends.cudnn as cudnn
 
 from data_loader import data_loader
-from utilities import logger, AverageMeter, accuracy, timeSince
+from utils.utilities import logger, AverageMeter, accuracy, timeSince
 from models import upgrade_dynamic_layers, create_sr_scheduler
 
 parser = argparse.ArgumentParser(description='CIFAR-10, CIFAR-100 and ImageNet-1k Model Slicing Training')
@@ -24,6 +24,7 @@ parser.add_argument('--sr_list', nargs='+', help='the slice rate list in descend
 parser.add_argument('--sr_train_prob', nargs='+', help='the prob of picking subnet corresponding to sr_list')
 parser.add_argument('--sr_scheduler_type', default='random', type=str, help='slice rate scheduler, support random, random[_min][_max], round_robin')
 parser.add_argument('--sr_rand_num', default=1, type=int, metavar='N', help='the number of random sampled slice rate except min/max (default: 1)')
+parser.add_argument('--no_gn', dest='use_gn', action='store_false', help='use GroupNorm or MultiBN (default: True)')
 
 parser.add_argument('--epoch', default=300, type=int, metavar='N', help='number of total epochs to run')
 parser.add_argument('--start_epoch', default=0, type=int, metavar='N', help='manual epoch number (useful on restarts)')
@@ -45,6 +46,7 @@ parser.add_argument('--no_augment', dest='augment', action='store_false', help='
 
 parser.add_argument('--log_freq', default=10, type=int, metavar='N', help='log frequency')
 
+parser.set_defaults(use_gn=True)
 parser.set_defaults(cosine=False)
 parser.set_defaults(resume_best=False)
 parser.set_defaults(augment=True)
@@ -73,7 +75,7 @@ def main():
 
     # create model and upgrade model to support model slicing
     model = create_model(args, print_logger)
-    model = upgrade_dynamic_layers(model, args.groups, args.sr_list)
+    model = upgrade_dynamic_layers(model, args.groups, args.sr_list, args.use_gn)
     model = torch.nn.DataParallel(model).cuda()
 
     criterion = torch.nn.CrossEntropyLoss().cuda()

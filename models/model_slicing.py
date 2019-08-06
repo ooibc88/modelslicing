@@ -2,7 +2,7 @@ import numpy as np
 import torch.nn as nn
 from torch.nn import functional as F
 
-__all__ = ['DynamicConv2d', 'DynamicGN', 'DynamicLinear', 'DYNAMIC_LAYERS',
+__all__ = ['DynamicConv2d', 'DynamicGN', 'DynamicLinear', 'DynamicBN', 'DYNAMIC_LAYERS',
            'update_sr_idx', 'bind_update_sr_idx', 'upgrade_dynamic_layers',
            'create_sr_scheduler']
 
@@ -34,6 +34,16 @@ class DynamicGN(nn.GroupNorm):
         return F.group_norm(input, round(num_channels*self.num_groups/float(self.num_channels)),
                             weight, bias, self.eps)
 
+class DynamicBN(nn.Module):
+    def __init__(self, num_features, affine=True, track_running_stats=True, sr_in_list=(1.,)):
+        super(DynamicBN, self).__init__()
+        self.sr_idx, self.sr_in_list = 0, sorted(set(sr_in_list), reverse=True)
+        self.bn_list = nn.Sequential(*[nn.BatchNorm2d(int(num_features * sr),
+            affine=affine, track_running_stats=track_running_stats) for sr in self.sr_in_list])
+
+    def forward(self, input):
+        return self.bn_list[self.sr_idx](input)
+
 class DynamicLinear(nn.Linear):
     def __init__(self, in_features, out_features, bias=True, sr_in_list=(1.0,), sr_out_list=None):
         self.sr_idx, self.sr_in_list = 0, sorted(set(sr_in_list), reverse=True)
@@ -48,7 +58,7 @@ class DynamicLinear(nn.Linear):
         if self.bias is not None: bias = self.bias[:out_features]
         return F.linear(input, weight, bias)
 
-DYNAMIC_LAYERS = (DynamicConv2d, DynamicLinear, DynamicGN)
+DYNAMIC_LAYERS = (DynamicConv2d, DynamicLinear, DynamicGN, DynamicBN)
 
 def update_sr_idx(model, idx):
     model.apply(lambda module: (setattr(module, 'sr_idx', idx)
@@ -57,7 +67,7 @@ def update_sr_idx(model, idx):
 def bind_update_sr_idx(model):
     model.update_sr_idx = update_sr_idx.__get__(model)
 
-def upgrade_dynamic_layers(model, num_groups=8, sr_in_list=(1.,)):
+def upgrade_dynamic_layers(model, num_groups=8, sr_in_list=(1.,), use_gn=True):
     sr_in_list = sorted(set(sr_in_list), reverse=True)
 
     def update(model):
@@ -67,9 +77,11 @@ def upgrade_dynamic_layers(model, num_groups=8, sr_in_list=(1.,)):
             module.stride, module.padding, module.dilation, module.groups, module.bias is not None, sr_in_list))
             elif isinstance(module, nn.Linear):
                 setattr(model, name, DynamicLinear(module.in_features, module.out_features,
-                                            module.bias is not None, sr_in_list))
+                                                    module.bias is not None, sr_in_list))
             elif isinstance(module, nn.BatchNorm2d):
-                setattr(model, name, DynamicGN(num_groups, module.num_features, module.eps, sr_in_list))
+                if use_gn: setattr(model, name, DynamicGN(num_groups, module.num_features, module.eps, sr_in_list))
+                else: setattr(model, name, DynamicBN(module.num_features,
+                                                     module.affine, module.track_running_stats, sr_in_list))
 
             update(module)
 

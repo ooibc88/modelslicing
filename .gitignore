@@ -25,3 +25,7 @@ checkpoint
 # bash files
 *.sh
 info.py
+train_hold.py
+
+# multi bn
+models/multi_bn.py
