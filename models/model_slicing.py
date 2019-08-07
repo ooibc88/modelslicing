@@ -67,21 +67,23 @@ def update_sr_idx(model, idx):
 def bind_update_sr_idx(model):
     model.update_sr_idx = update_sr_idx.__get__(model)
 
-def upgrade_dynamic_layers(model, num_groups=8, sr_in_list=(1.,), use_gn=True):
+def upgrade_dynamic_layers(model, num_groups=8, sr_in_list=(1.,)):
     sr_in_list = sorted(set(sr_in_list), reverse=True)
 
     def update(model):
         for name, module in model.named_children():
             if isinstance(module, nn.Conv2d):
-                setattr(model, name, DynamicConv2d(module.in_channels, module.out_channels, module.kernel_size,
-            module.stride, module.padding, module.dilation, module.groups, module.bias is not None, sr_in_list))
+                setattr(model, name, DynamicConv2d(module.in_channels, module.out_channels,
+                    module.kernel_size, module.stride, module.padding, module.dilation,
+                    module.groups, module.bias is not None, sr_in_list))
             elif isinstance(module, nn.Linear):
                 setattr(model, name, DynamicLinear(module.in_features, module.out_features,
-                                                    module.bias is not None, sr_in_list))
+                    module.bias is not None, sr_in_list))
             elif isinstance(module, nn.BatchNorm2d):
-                if use_gn: setattr(model, name, DynamicGN(num_groups, module.num_features, module.eps, sr_in_list))
+                if num_groups>0: setattr(model, name, DynamicGN(
+                    num_groups, module.num_features, module.eps, sr_in_list))
                 else: setattr(model, name, DynamicBN(module.num_features,
-                                                     module.affine, module.track_running_stats, sr_in_list))
+                    module.affine, module.track_running_stats, sr_in_list))
 
             update(module)
 
