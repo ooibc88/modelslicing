@@ -11,6 +11,7 @@ import torch.backends.cudnn as cudnn
 
 from data_loader import data_loader
 from utils.utilities import logger, AverageMeter, accuracy, timeSince
+from utils.lr_scheduler import GradualWarmupScheduler
 from models import upgrade_dynamic_layers, create_sr_scheduler
 
 parser = argparse.ArgumentParser(description='CIFAR-10, CIFAR-100 and ImageNet-1k Model Slicing Training')
@@ -28,10 +29,13 @@ parser.add_argument('--sr_rand_num', default=1, type=int, metavar='N', help='the
 parser.add_argument('--epoch', default=300, type=int, metavar='N', help='number of total epochs to run')
 parser.add_argument('--start_epoch', default=0, type=int, metavar='N', help='manual epoch number (useful on restarts)')
 parser.add_argument('--batch_size', '-b', default=128, type=int, metavar='N', help='mini-batch size')
-parser.add_argument('--lr', default=0.1, type=float, metavar='LR', help='initial learning rate')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M', help='momentum')
 parser.add_argument('--weight_decay', '--wd', default=1e-4, type=float, metavar='W', help='weight decay (default: 1e-4)')
+parser.add_argument('--lr', default=0.1, type=float, metavar='LR', help='initial learning rate')
 parser.add_argument('--cosine', dest='cosine', action='store_true', help='cosine LR scheduler')
+parser.add_argument('--warmup', dest='warmup', action='store_true', help='gradual warmup LR scheduler')
+parser.add_argument('--lr_multiplier', default=10., type=float, metavar='LR', help='LR warm up multiplier')
+parser.add_argument('--warmup_epoch', default=5, type=int, metavar='N', help='LR warm up epochs')
 
 parser.add_argument('--resume', default='', type=str, metavar='PATH', help='path to latest checkpoint (default: none)')
 parser.add_argument('--resume_best', dest='resume_best', action='store_true', help='whether to resume the best_checkpoint (default: False)')
@@ -46,6 +50,7 @@ parser.add_argument('--no_augment', dest='augment', action='store_false', help='
 parser.add_argument('--log_freq', default=10, type=int, metavar='N', help='log frequency')
 
 parser.set_defaults(cosine=False)
+parser.set_defaults(warmup=False)
 parser.set_defaults(resume_best=False)
 parser.set_defaults(augment=True)
 
@@ -111,10 +116,11 @@ def main():
         is_best = err1 <= best_err1
         best_err1 = min(err1, best_err1)
         if is_best: best_err5 = err5
-        print_logger.info('Current best accuracy:\ttop1 = {top1:.4f} | top5 = {top5:.4f}'.format(top1=best_err1, top5=best_err5))
+        print_logger.info('Current best accuracy:\ttop1 = {top1:.4f} | top5 = {top5:.4f}'.
+                          format(top1=best_err1, top5=best_err5))
         save_checkpoint(OrderedDict([('epoch', epoch), ('best_err1', best_err1), ('best_err5', best_err5),
-            ('model_state', model.state_dict()), ('optimizer_state', optimizer.state_dict()), ('scheduler_state', scheduler.state_dict())]),
-            is_best, args.checkpoint_dir)
+            ('model_state', model.state_dict()), ('optimizer_state', optimizer.state_dict()),
+            ('scheduler_state', scheduler.state_dict())]), is_best, args.checkpoint_dir)
 
 def create_model(args, print_logger):
     print_logger.info("==> creating model '{}'".format(args.net_type))
@@ -125,11 +131,17 @@ def create_model(args, print_logger):
     return model
 
 def create_lr_scheduler(args, optimizer, print_logger):
-    if args.cosine: scheduler = lr_scheduler.CosineAnnealingLR(optimizer, args.epoch)
-    elif args.dataset.startswith('cifar'): scheduler = lr_scheduler.MultiStepLR(optimizer, [int(args.epoch*0.5), int(args.epoch*0.75)], gamma=0.1)
-    elif args.dataset == 'imagenet': scheduler = lr_scheduler.MultiStepLR(optimizer, [int(args.epoch/3.), int(args.epoch*2/3.)], gamma=0.1)
+    if args.cosine: return lr_scheduler.CosineAnnealingLR(optimizer, args.epoch)
+    elif args.dataset.startswith('cifar'): return lr_scheduler.MultiStepLR(optimizer,
+                        [int(args.epoch*0.5), int(args.epoch*0.75)], gamma=0.1)
+    elif args.dataset == 'imagenet':
+        if args.warmup:
+            scheduler = lr_scheduler.CosineAnnealingLR(optimizer, 100-args.warmup_epoch)
+            return GradualWarmupScheduler(optimizer, multiplier=args.lr_multiplier,
+                                          warmup_epoch=args.warmup_epoch, scheduler=scheduler)
+        else: return lr_scheduler.MultiStepLR(optimizer,
+                        [int(args.epoch*0.3), int(args.epoch*0.6), int(args.epoch*0.9)], gamma=0.1)
     else: raise Exception('unknown scheduler for dataset: {}'.format(args.dataset))
-    return scheduler
 
 def load_checkpoint(print_logger):
     print_logger.info("==> loading checkpoint '{}'".format(args.resume))
@@ -160,11 +172,11 @@ def run(epoch, model, data_loader, criterion, print_logger, sr_scheduler=None, o
 
     timestamp = time.time()
     for idx, (input, target) in enumerate(data_loader):
-        # print('start batch training', time.time())
+        # torch.cuda.synchronize();print('start batch training', time.time())
         if torch.cuda.is_available():
             input = input.cuda(non_blocking=True)
             target = target.cuda(non_blocking=True)
-        # print('loaded data to cuda', time.time())
+        # torch.cuda.synchronize();print('loaded data to cuda', time.time())
         if is_train:
             optimizer.zero_grad()
 
@@ -181,7 +193,7 @@ def run(epoch, model, data_loader, criterion, print_logger, sr_scheduler=None, o
             with torch.no_grad():
                 output = model(input)
                 loss = criterion(output, target)
-        # print('finnish batch training', time.time())
+        # torch.cuda.synchronize();print('finnish batch training', time.time())
         err1, err5 = accuracy(output, target, topk=(1,5))
         loss_avg.update(loss.item(), input.size()[0])
         top1_avg.update(err1, input.size()[0])
@@ -189,15 +201,18 @@ def run(epoch, model, data_loader, criterion, print_logger, sr_scheduler=None, o
 
         batch_time_avg.update(time.time()-timestamp);timestamp = time.time()
 
-        # print('start logging', time.time())
+        # torch.cuda.synchronize();print('start logging', time.time())
         if idx % args.log_freq == 0:
             print_logger.info('Epoch: [{0}/{1}][{2}/{3}][SR-{4}]\t'
                   'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\tLoss {loss.val:.4f} ({loss.avg:.4f})\t'
                   'Top 1-err {top1.val:.4f} ({top1.avg:.4f})\tTop 5-err {top5.val:.4f} ({top5.avg:.4f})'.format(
-                epoch, args.epoch, idx, len(data_loader), args.sr_list[args.sr_idx], batch_time=batch_time_avg, loss=loss_avg, top1=top1_avg, top5=top5_avg))
+                epoch, args.epoch, idx, len(data_loader), args.sr_list[args.sr_idx],
+                batch_time=batch_time_avg, loss=loss_avg, top1=top1_avg, top5=top5_avg))
 
-    print_logger.info('* Epoch: [{0}/{1}]{2:>8s}  Total Time: {3}\tTop 1-err {top1.avg:.4f}  Top 5-err {top5.avg:.4f}\tTest Loss {loss.avg:.4f}'.format(
-        epoch, args.epoch, ('[train]' if is_train else '[val]'), timeSince(s=batch_time_avg.sum), top1=top1_avg, top5=top5_avg, loss=loss_avg))
+    print_logger.info('* Epoch: [{0}/{1}]{2:>8s}  Total Time: {3}\tTop 1-err {top1.avg:.4f}  '
+                      'Top 5-err {top5.avg:.4f}\tTest Loss {loss.avg:.4f}'.format(epoch, args.epoch,
+                    ('[train]' if is_train else '[val]'), timeSince(s=batch_time_avg.sum),
+                    top1=top1_avg, top5=top5_avg, loss=loss_avg))
     return top1_avg.avg, top5_avg.avg
 
 

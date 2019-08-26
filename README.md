@@ -27,7 +27,7 @@ We illustrate a dense layer with slice rate r=0.5 (activated groups highlighted 
 
 ```
 Example training code:
-CUDA_VISIBLE_DEVICES=0,1,2,3 python train.py --exp_name resnet_50 --net_type resnet --group 8 --depth 50 --sr_list 1.0 0.75 0.5 0.25 --sr_scheduler_type random_min_max --sr_rand_num 1 --epoch 90 --batch_size 256 --lr 0.1  --dataset imagenet --data_dir /data/ --log_freq 50
+CUDA_VISIBLE_DEVICES=0,1,2,3 python train.py --exp_name resnet_50 --net_type resnet --group 8 --depth 50 --sr_list 1.0 0.75 0.5 0.25 --sr_scheduler_type random_min_max --sr_rand_num 1 --epoch 100 --batch_size 256 --lr 0.1  --dataset imagenet --data_dir /data/ --log_freq 50
 
 Please check help info in argparse.ArgumentParser (train.py) for more details 
 ```
