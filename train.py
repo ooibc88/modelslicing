@@ -84,7 +84,7 @@ def main():
     criterion = torch.nn.CrossEntropyLoss().cuda()
     optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum,
                                 weight_decay=args.weight_decay, nesterov=True)
-    scheduler = create_lr_scheduler(args, optimizer, print_logger)
+    scheduler = create_lr_scheduler(args, optimizer)
 
     if args.resume:
         checkpoint = load_checkpoint(print_logger)
@@ -98,13 +98,13 @@ def main():
     cudnn.benchmark = True
 
     # start training
-    sr_scheduler = create_sr_scheduler(args.sr_scheduler_type, args.sr_rand_num, args.sr_list, args.sr_train_prob)
+    sr_scheduler = create_sr_scheduler(args.sr_scheduler_type, args.sr_list, args.sr_rand_num, args.sr_train_prob)
     for epoch in range(args.start_epoch, args.epoch):
-        scheduler.step(epoch)
         print_logger.info('Epoch: [{0}/{1}]\tLR: {LR:.6f}'.format(epoch, args.epoch, LR=scheduler.get_lr()[0]))
 
         # train one epoch
         run(epoch, model, train_loader, criterion, print_logger, sr_scheduler, optimizer)
+        scheduler.step()
 
         # evaluate on all the sr_idxs, from the smallest subnet to the largest
         for sr_idx in reversed(range(len(args.sr_list))):
@@ -130,7 +130,7 @@ def create_model(args, print_logger):
     print_logger.info('the number of model parameters: {}'.format(sum([p.data.nelement() for p in model.parameters()])))
     return model
 
-def create_lr_scheduler(args, optimizer, print_logger):
+def create_lr_scheduler(args, optimizer):
     if args.cosine: return lr_scheduler.CosineAnnealingLR(optimizer, args.epoch)
     elif args.dataset.startswith('cifar'): return lr_scheduler.MultiStepLR(optimizer,
                         [int(args.epoch*0.5), int(args.epoch*0.75)], gamma=0.1)

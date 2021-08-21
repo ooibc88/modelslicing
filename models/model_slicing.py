@@ -100,12 +100,13 @@ def upgrade_dynamic_layers(model, num_groups=8, sr_in_list=(1.,)):
     # return self to support chain operations (optional return)
     return model
 
-def create_sr_scheduler(scheduler_type, sr_rand_num, sr_list, sr_prob=None):
+def create_sr_scheduler(scheduler_type, sr_list, sr_rand_num=1, sr_prob=None):
     '''
     :param scheduler_type:  round_robin, random+optionally specified min/max slice rate
-    :param sr_rand_num:     # of random sampled slice rate
     :param sr_list:         slice rate list
+    :param sr_rand_num:     number of slice rates for random sampling
     :param sr_prob:         probabilities associated with each slice rate for random sampling
+                            default: None for uniform sampling, or len(sr_prob)==sr_rand_num
     :return:                a list of slice rate for the current training batch
     '''
     idx_num = len(sr_list)

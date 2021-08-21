@@ -1,8 +1,6 @@
-from torch.optim.lr_scheduler import _LRScheduler
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import StepLR
 
-class GradualWarmupScheduler(_LRScheduler):
+class GradualWarmupScheduler(StepLR):
     """ Gradually warm-up(increasing) learning rate in optimizer.
     Proposed in 'Accurate, Large Minibatch SGD: Training ImageNet in 1 Hour'.
     Args:
@@ -33,22 +31,7 @@ class GradualWarmupScheduler(_LRScheduler):
 
     def step(self, epoch=None, metrics=None):
         if self.finish_warmup and self.scheduler:
-            if epoch is None:
-                self.scheduler.step(None)
-            else:
-                self.scheduler.step(epoch - self.warmup_epoch)
+            if epoch is None: self.scheduler.step(None)
+            else: self.scheduler.step(epoch - self.warmup_epoch)
         else:
             return super(GradualWarmupScheduler, self).step(epoch)
-
-if __name__ == '__main__':
-    import torch
-    v = torch.zeros(10, requires_grad=True)
-    optim = torch.optim.SGD([v], lr=0.01)
-
-    scheduler = CosineAnnealingLR(optim, 95)
-    scheduler = GradualWarmupScheduler(optim, multiplier=10, warmup_epoch=5, scheduler=scheduler)
-
-    for epoch in range(0, 100):
-        scheduler.step(epoch)
-        print(epoch, optim.param_groups[0]['lr'])
-
