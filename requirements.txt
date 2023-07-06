@@ -1,5 +1,5 @@
 matplotlib==3.2.2
 torch==1.6.0
-scipy==1.4.1
+scipy==1.10.0
 torchvision==0.7.0
 numpy==1.18.5
